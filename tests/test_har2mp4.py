@@ -58,7 +58,7 @@ def entry(url: str, body: bytes, mime: str, binary: bool) -> dict:
 
 
 def build_har(path: Path, parts: list[list[bytes]], encrypted: bool,
-              drop: frozenset = frozenset()) -> int:
+              drop: frozenset = frozenset(), seg_duration: float = 1.0) -> int:
     """Write a HAR with master + media playlist + segments (+ key).
 
     `parts` are lists of segments separated by EXT-X-DISCONTINUITY.
@@ -71,7 +71,7 @@ def build_har(path: Path, parts: list[list[bytes]], encrypted: bool,
               "high/index.m3u8\n")
     entries.append(entry(f"{HOST}/master.m3u8?sig=1", master.encode(),
                          "application/vnd.apple.mpegurl", False))
-    lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:1",
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{int(seg_duration)}",
              "#EXT-X-MEDIA-SEQUENCE:1", "#EXT-X-PLAYLIST-TYPE:VOD"]
     if encrypted:
         lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="https://keys.example.com/k1"')
@@ -84,7 +84,7 @@ def build_har(path: Path, parts: list[list[bytes]], encrypted: bool,
             seq = n + 1
             # Mix relative and root-relative URIs, like real CDNs do.
             uri = f"s{seq:03d}.ts" if seq % 2 else f"/v/abc/low/s{seq:03d}.ts"
-            lines += ["#EXTINF:1.0,", uri]
+            lines += [f"#EXTINF:{seg_duration},", uri]
             if n not in drop:
                 body = encrypt(data, seq.to_bytes(16, "big")) if encrypted else data
                 entries.append(entry(f"{HOST}/low/s{seq:03d}.ts", body, "video/mp2t", True))
@@ -187,6 +187,22 @@ class Har2Mp4Test(unittest.TestCase):
         r = run(har)
         self.assertEqual(r.returncode, 1)
         self.assertIn("no HLS playlists", r.stderr)
+
+    def test_duration_mismatch_warning(self):
+        har = self.dir / "clip.har"
+        build_har(har, [self.part_a], encrypted=False, seg_duration=10.0)
+        r = run(har)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("warning: output duration", r.stderr)
+        self.assertTrue((self.dir / "clip.mp4").exists())
+
+    def test_duration_mismatch_strict(self):
+        har = self.dir / "clip.har"
+        build_har(har, [self.part_a], encrypted=False, seg_duration=10.0)
+        r = run(har, "--strict-duration")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("error: output duration", r.stderr)
+        self.assertFalse((self.dir / "clip.mp4").exists())
 
 
 if __name__ == "__main__":

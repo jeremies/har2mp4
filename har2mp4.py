@@ -4,7 +4,7 @@
 Works fully offline: playlists, segments and AES-128 keys are taken from the
 response bodies stored in the HAR. Nothing is downloaded.
 
-Requirements: Python 3.9+, ffmpeg, and openssl (only for AES-128 streams).
+Requirements: Python 3.9+, ffmpeg (including ffprobe), and openssl (only for AES-128 streams).
 
 Examples:
     har2mp4.py capture.har                 # -> capture.mp4 next to the HAR
@@ -513,6 +513,25 @@ def run_ffmpeg(args: list[str]) -> None:
         raise BuildError(proc.stderr.decode(errors="replace").strip() or "ffmpeg failed")
 
 
+def probe_duration(path: Path) -> Optional[float]:
+    """Return the container duration of a media file in seconds using ffprobe."""
+    if not shutil.which("ffprobe"):
+        return None
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "json", str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout)
+        dur = data.get("format", {}).get("duration")
+        return float(dur) if dur is not None else None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
 def build(har: Har, info: VariantInfo, out: Path, reencode: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="har2mp4-") as tmp:
         tmpd = Path(tmp)
@@ -586,6 +605,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="build even if some segments/keys are missing (leaves gaps)")
     ap.add_argument("--reencode", action="store_true",
                     help="re-encode to H.264/AAC instead of lossless remux")
+    ap.add_argument("--strict-duration", action="store_true",
+                    help="fail if output duration differs from playlist duration")
     args = ap.parse_args(argv)
 
     if not args.har.is_file():
@@ -659,7 +680,40 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"{tag} error: {e}", file=sys.stderr)
             failures += 1
             continue
-        print(f"{tag} wrote {out}")
+
+        actual_dur = probe_duration(out)
+        if actual_dur is not None:
+            expected_dur = cov.duration
+            orig_dur = sum(s.duration for s in cov.playlist.segments)
+            tol = max(2.0, expected_dur * 0.02)
+            diff = actual_dur - expected_dur
+            if expected_dur > 0 and abs(diff) > tol:
+                level = "error" if args.strict_duration else "warning"
+                target_desc = "playlist" if len(cov.present) == cov.total else "captured"
+                print(f"{tag} {level}: output duration ({fmt_dur(actual_dur)}) differs from "
+                      f"{target_desc} duration ({fmt_dur(expected_dur)}) by {diff:+.1f}s",
+                      file=sys.stderr)
+                if args.strict_duration:
+                    out.unlink(missing_ok=True)
+                    failures += 1
+                    continue
+            dur_label = fmt_dur(actual_dur)
+            if len(cov.present) < cov.total and orig_dur > 0:
+                dur_label += f", original {fmt_dur(orig_dur)}"
+            print(f"{tag} wrote {out} ({dur_label})")
+        else:
+            if not shutil.which("ffprobe"):
+                print(f"{tag} warning: ffprobe not found in PATH; duration could not be verified",
+                      file=sys.stderr)
+            else:
+                print(f"{tag} warning: could not determine output duration with ffprobe",
+                      file=sys.stderr)
+            if args.strict_duration:
+                print(f"{tag} error: --strict-duration could not verify duration", file=sys.stderr)
+                out.unlink(missing_ok=True)
+                failures += 1
+                continue
+            print(f"{tag} wrote {out}")
     return 1 if failures else 0
 
 

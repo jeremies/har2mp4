@@ -7,7 +7,7 @@ the HAR; nothing is downloaded.
 ## Requirements
 
 - Python 3.9+ (stdlib only)
-- `ffmpeg`
+- `ffmpeg` (including `ffprobe`)
 - `openssl` (only needed for AES-128 encrypted streams)
 
 ## Capturing a HAR
@@ -37,6 +37,7 @@ the HAR; nothing is downloaded.
 | `--variant SPEC` | Variant index from `--list`, or a substring of its resolution/URL. |
 | `--allow-missing` | Build even if some segments/keys are missing (gaps are skipped). |
 | `--reencode` | Re-encode to H.264/AAC instead of lossless remux. |
+| `--strict-duration` | Fail if output MP4 duration differs from playlist duration. |
 
 ## How it works
 
@@ -55,6 +56,8 @@ the HAR; nothing is downloaded.
   back to re-encoding.
 - Also handles fMP4 segments (`#EXT-X-MAP`), byte ranges, separate audio
   renditions and HTTP redirects recorded in the HAR.
+- Verifies the final MP4 duration against the playlist duration with `ffprobe`
+  after muxing (warning on discrepancy, or failing with `--strict-duration`).
 
 ## Tests
 
