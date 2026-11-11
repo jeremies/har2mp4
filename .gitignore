@@ -1,0 +1,4 @@
+# HAR captures contain cookies, auth tokens and signed URLs - never commit them.
+*.har
+*.mp4
+__pycache__/
